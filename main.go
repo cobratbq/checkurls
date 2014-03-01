@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,52 +14,65 @@ import (
 )
 
 const (
-	NUM_RESOLVERS = 3
+	// NumCheckers contains the number of workers that are used to check URLs.
+	NumCheckers = 3
 )
 
 var (
-	errDone = errors.New("not following any more redirects")
-	prots   = []string{
+	errDone   = errors.New("not following any more redirects")
+	protocols = []string{
 		"http",
 		"https",
 	}
 )
 
-type RedirectBehavior func(req *http.Request, via []*http.Request) error
+// Redirector is the function signature for a redirect checker for http requests.
+type Redirector func(req *http.Request, via []*http.Request) error
 
 var (
-	// Follow all redirects, only find out about final pages.
+	// FollowAllRedirects follows all redirects, unconditionally.
 	FollowAllRedirects = func(req *http.Request, via []*http.Request) error {
 		return nil
 	}
-	// Stop on first redirect encountered.
+	// StopOnFirstRedirect stops at the first redirect it encounters..
 	StopOnFirstRedirect = func(req *http.Request, via []*http.Request) error {
 		return errDone
 	}
-	// Stop as soon as you are redirected to a different domain.
+	// StopOnRedirectToDifferentDomain stops as soon as you are redirected to a different domain.
 	StopOnRedirectToDifferentDomain = func(req *http.Request, via []*http.Request) error {
 		if req.URL.Host != via[len(via)-1].URL.Host {
 			return errDone
 		}
 		return nil
 	}
+	// StopOnCyclicRedirect stops only if redirects get into an infinite loop.
+	StopOnCyclicRedirect = func(req *http.Request, via []*http.Request) error {
+		for _, prev := range via {
+			if prev.URL == req.URL {
+				return errDone
+			}
+		}
+		return nil
+	}
 )
 
+// Site contains the request URL, HTTP status code and response URL.
 type Site struct {
-	RequestUrl  url.URL
+	RequestURL  url.URL
 	StatusCode  int
-	ResponseUrl *url.URL
+	ResponseURL *url.URL
 }
 
 func (s *Site) String() string {
-	var line = fmt.Sprintf("%s,%d,", s.RequestUrl.Host, s.StatusCode)
-	if s.ResponseUrl != nil {
-		line += s.ResponseUrl.String()
+	var line = fmt.Sprintf("%s,%d,", s.RequestURL.Host, s.StatusCode)
+	if s.ResponseURL != nil {
+		line += s.ResponseURL.String()
 	}
 	return line
 }
 
 func main() {
+	flag.Parse()
 	// start result writer
 	var writerGroup sync.WaitGroup
 	var result = make(chan *Site)
@@ -66,11 +80,11 @@ func main() {
 	go writeWorker(&writerGroup, result)
 	// start url reader
 	var work = make(chan string)
-	go readWorker("urls.txt", work)
+	go readWorker(work)
 	// start checkers
-	var checkRedirect = FollowAllRedirects
+	var checkRedirect = StopOnFirstRedirect
 	var workerGroup sync.WaitGroup
-	for i := 0; i < NUM_RESOLVERS; i++ {
+	for i := 0; i < NumCheckers; i++ {
 		workerGroup.Add(1)
 		go checkWorker(&workerGroup, work, result, checkRedirect)
 	}
@@ -81,14 +95,26 @@ func main() {
 	writerGroup.Wait()
 }
 
-func readWorker(filepath string, work chan<- string) {
+func readWorker(work chan<- string) {
 	defer close(work)
-	reader := openUrls(filepath)
-	lineReader := bufio.NewReader(reader)
+	var source io.Reader
+	if flag.NArg() < 1 {
+		source = os.Stdin
+	} else {
+		var err error
+		source, err = os.Open(flag.Arg(0))
+		if err != nil {
+			os.Stderr.WriteString("error getting URLs: " + err.Error() + "\n")
+			return
+		}
+	}
+	lineReader := bufio.NewReader(source)
 	for {
 		site, err := lineReader.ReadString('\n')
-		for _, prot := range prots {
-			work <- formatUrl(prot, strings.TrimRight(site, "\n"))
+		if len(site) > 0 {
+			for _, prot := range protocols {
+				work <- formatURL(prot, strings.TrimRight(site, "\n"))
+			}
 		}
 		if err != nil {
 			break
@@ -96,16 +122,12 @@ func readWorker(filepath string, work chan<- string) {
 	}
 }
 
-func openUrls(filepath string) io.Reader {
-	return strings.NewReader("google.com\nwww.google.com\ntweakers.net\nwww.tweakers.net\nsecurity.nl\nwww.security.nl\nwww.em-te.nl\ngmail.com\nwww.van-hoeckel.nl\nvan-hoeckel.nl")
-}
-
-func checkWorker(wg *sync.WaitGroup, work <-chan string, result chan<- *Site, check RedirectBehavior) {
+func checkWorker(wg *sync.WaitGroup, work <-chan string, result chan<- *Site, check Redirector) {
 	defer wg.Done()
 	var c http.Client
 	c.CheckRedirect = check
 	for site := range work {
-		r, err := testUrl(&c, site)
+		r, err := testURL(&c, site)
 		if err == nil {
 			result <- r
 		} else {
@@ -121,7 +143,7 @@ func writeWorker(wg *sync.WaitGroup, result <-chan *Site) {
 	}
 }
 
-func testUrl(c *http.Client, site string) (*Site, error) {
+func testURL(c *http.Client, site string) (*Site, error) {
 	resp, err := c.Get(site)
 	if err != nil {
 		switch e := err.(type) {
@@ -138,14 +160,14 @@ func testUrl(c *http.Client, site string) (*Site, error) {
 		}
 	}
 	var result Site
-	result.RequestUrl = *resp.Request.URL
+	result.RequestURL = *resp.Request.URL
 	result.StatusCode = resp.StatusCode
 	if loc, err := resp.Location(); err == nil {
-		result.ResponseUrl = loc
+		result.ResponseURL = loc
 	}
 	return &result, nil
 }
 
-func formatUrl(protocol string, site string) string {
+func formatURL(protocol string, site string) string {
 	return protocol + "://" + site + "/"
 }
