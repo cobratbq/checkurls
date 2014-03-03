@@ -15,7 +15,7 @@ import (
 
 const (
 	// NumCheckers contains the number of workers that are used to check URLs.
-	NumCheckers = 3
+	NumCheckers = 5
 )
 
 var (
@@ -64,7 +64,7 @@ type Site struct {
 }
 
 func (s *Site) String() string {
-	var line = fmt.Sprintf("%s,%d,", s.RequestURL.Host, s.StatusCode)
+	var line = fmt.Sprintf("%s,%d,", s.RequestURL.String(), s.StatusCode)
 	if s.ResponseURL != nil {
 		line += s.ResponseURL.String()
 	}
