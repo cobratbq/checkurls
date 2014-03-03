@@ -113,7 +113,7 @@ func readWorker(work chan<- string) {
 		site, err := lineReader.ReadString('\n')
 		if len(site) > 0 {
 			for _, prot := range protocols {
-				work <- formatURL(prot, strings.TrimRight(site, "\n"))
+				work <- formatURL(prot, strings.Trim(site, " \t\r\n"))
 			}
 		}
 		if err != nil {
