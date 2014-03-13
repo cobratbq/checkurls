@@ -48,7 +48,7 @@ var (
 	// StopOnCyclicRedirect stops only if redirects get into an infinite loop.
 	StopOnCyclicRedirect = func(req *http.Request, via []*http.Request) error {
 		for _, prev := range via {
-			if prev.URL == req.URL {
+			if *prev.URL == *req.URL {
 				return errDone
 			}
 		}
